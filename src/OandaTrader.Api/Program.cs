@@ -1,8 +1,10 @@
 using System.Net.Http.Headers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using OandaTrader.Domain.Strategies;
 using OandaTrader.Infrastructure.Backtesting;
 using OandaTrader.Infrastructure.Data;
+using OandaTrader.Infrastructure.Ml;
 using OandaTrader.Infrastructure.Oanda;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -31,6 +33,20 @@ builder.Services.AddHttpClient<OandaRestClient>((sp, http) =>
 
 builder.Services.AddScoped<CandleCacheService>();
 builder.Services.AddScoped<BacktestRunner>();
+
+builder.Services.Configure<MlOptions>(builder.Configuration.GetSection(MlOptions.SectionName));
+builder.Services.PostConfigure<MlOptions>(o =>
+{
+    // Resolve a relative models directory against the content root so it doesn't depend on
+    // the process working directory (VS2022 and `dotnet run` can differ).
+    if (!Path.IsPathRooted(o.ModelsDirectory))
+    {
+        o.ModelsDirectory = Path.Combine(builder.Environment.ContentRootPath, o.ModelsDirectory);
+    }
+});
+builder.Services.AddScoped<ModelTrainingService>();
+builder.Services.AddSingleton<MlPredictionService>();
+builder.Services.AddSingleton<IWinProbabilityPredictor>(sp => sp.GetRequiredService<MlPredictionService>());
 
 var app = builder.Build();
 
