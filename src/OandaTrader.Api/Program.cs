@@ -1,5 +1,8 @@
+using System.Net.Http.Headers;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using OandaTrader.Infrastructure.Data;
+using OandaTrader.Infrastructure.Oanda;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -11,6 +14,17 @@ builder.Services.AddOpenApi();
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("AppDb")));
+
+builder.Services.Configure<OandaOptions>(builder.Configuration.GetSection(OandaOptions.SectionName));
+builder.Services.AddHttpClient<OandaRestClient>((sp, http) =>
+{
+    var options = sp.GetRequiredService<IOptions<OandaOptions>>().Value;
+    http.BaseAddress = options.RestBaseUri;
+    if (!string.IsNullOrWhiteSpace(options.ApiToken))
+    {
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiToken);
+    }
+});
 
 var app = builder.Build();
 
