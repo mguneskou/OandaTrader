@@ -26,7 +26,13 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
+// Skipped in Development: the SPA dev proxy talks to the plain-http listener, and
+// redirecting that to https here would bounce the browser's fetch to a different
+// origin (https on a different port), which gets blocked by CORS.
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseAuthorization();
 
