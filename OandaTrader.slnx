@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/OandaTrader.Api/OandaTrader.Api.csproj" />
+    <Project Path="src/OandaTrader.Domain/OandaTrader.Domain.csproj" />
+    <Project Path="src/OandaTrader.Infrastructure/OandaTrader.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/OandaTrader.Domain.Tests/OandaTrader.Domain.Tests.csproj" />
+  </Folder>
+</Solution>

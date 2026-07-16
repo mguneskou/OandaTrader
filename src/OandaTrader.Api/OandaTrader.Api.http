@@ -1,0 +1,6 @@
+@OandaTrader.Api_HostAddress = http://localhost:5047
+
+GET {{OandaTrader.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
