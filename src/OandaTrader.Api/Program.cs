@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using OandaTrader.Infrastructure.Backtesting;
 using OandaTrader.Infrastructure.Data;
 using OandaTrader.Infrastructure.Oanda;
 
@@ -8,7 +9,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(
+        new System.Text.Json.Serialization.JsonStringEnumConverter()));
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
@@ -25,6 +28,9 @@ builder.Services.AddHttpClient<OandaRestClient>((sp, http) =>
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiToken);
     }
 });
+
+builder.Services.AddScoped<CandleCacheService>();
+builder.Services.AddScoped<BacktestRunner>();
 
 var app = builder.Build();
 
