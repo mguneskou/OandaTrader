@@ -19,6 +19,61 @@ public class OandaRestClient(HttpClient httpClient)
                ?? throw new OandaApiException(response.StatusCode, "Oanda returned an empty account summary response.");
     }
 
+    /// <summary>Places a market order with attached stop-loss/take-profit. Positive
+    /// <paramref name="units"/> buys, negative sells. Returns null if the order didn't fill
+    /// (e.g. FOK cancel) rather than throwing, since that's an expected outcome, not a failure.</summary>
+    public async Task<(string TradeId, decimal FillPrice)?> PlaceMarketOrderAsync(
+        string accountId, string instrument, decimal units, decimal stopLossPrice, decimal takeProfitPrice, CancellationToken ct = default)
+    {
+        var payload = new
+        {
+            order = new
+            {
+                type = "MARKET",
+                instrument,
+                units = units.ToString(CultureInfo.InvariantCulture),
+                timeInForce = "FOK",
+                positionFill = "DEFAULT",
+                stopLossOnFill = new { price = stopLossPrice.ToString(CultureInfo.InvariantCulture) },
+                takeProfitOnFill = new { price = takeProfitPrice.ToString(CultureInfo.InvariantCulture) },
+            },
+        };
+
+        using var response = await httpClient.PostAsJsonAsync($"v3/accounts/{accountId}/orders", payload, ct);
+        var bodyText = await response.Content.ReadAsStringAsync(ct);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new OandaApiException(response.StatusCode, TryExtractErrorMessage(bodyText));
+        }
+
+        var body = JsonSerializer.Deserialize<CreateOrderResponse>(bodyText);
+        if (body?.OrderFillTransaction?.TradeOpened is { } opened)
+        {
+            return (opened.TradeId, decimal.Parse(body.OrderFillTransaction.Price, CultureInfo.InvariantCulture));
+        }
+
+        return null;
+    }
+
+    /// <summary>IDs of trades currently open on the account.</summary>
+    public async Task<HashSet<string>> GetOpenTradeIdsAsync(string accountId, CancellationToken ct = default)
+    {
+        using var response = await httpClient.GetAsync($"v3/accounts/{accountId}/openTrades", ct);
+        await EnsureSuccessAsync(response, ct);
+        var body = await response.Content.ReadFromJsonAsync<OpenTradesResponse>(cancellationToken: ct) ?? new OpenTradesResponse();
+        return body.Trades.Select(t => t.Id).ToHashSet();
+    }
+
+    public async Task<TradeDetailDto> GetTradeAsync(string accountId, string tradeId, CancellationToken ct = default)
+    {
+        using var response = await httpClient.GetAsync($"v3/accounts/{accountId}/trades/{tradeId}", ct);
+        await EnsureSuccessAsync(response, ct);
+        var body = await response.Content.ReadFromJsonAsync<TradeDetailResponse>(cancellationToken: ct)
+                   ?? throw new OandaApiException(response.StatusCode, "Oanda returned an empty trade detail response.");
+        return body.Trade;
+    }
+
     /// <summary>Fetches completed candles in [fromUtc, toUtc), paging in chunks of up to 5000
     /// since Oanda rejects a single request spanning more candles than that.</summary>
     public async Task<List<Candle>> GetCandlesAsync(
@@ -100,7 +155,7 @@ public class OandaRestClient(HttpClient httpClient)
     private static string ToOandaTimestamp(DateTime utc) =>
         utc.ToString("yyyy-MM-ddTHH:mm:ss.ffffffZ", CultureInfo.InvariantCulture);
 
-    private static DateTime ParseOandaTimestamp(string time) =>
+    public static DateTime ParseOandaTimestamp(string time) =>
         DateTime.Parse(time, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal);
 
     private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken ct)
@@ -110,21 +165,21 @@ public class OandaRestClient(HttpClient httpClient)
             return;
         }
 
-        string? errorMessage = null;
+        var body = await response.Content.ReadAsStringAsync(ct);
+        throw new OandaApiException(response.StatusCode, TryExtractErrorMessage(body));
+    }
+
+    private static string? TryExtractErrorMessage(string body)
+    {
         try
         {
-            var body = await response.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("errorMessage", out var msg))
-            {
-                errorMessage = msg.GetString();
-            }
+            return doc.RootElement.TryGetProperty("errorMessage", out var msg) ? msg.GetString() : null;
         }
         catch (JsonException)
         {
             // Response body wasn't the expected Oanda error JSON shape; fall back to the status code.
+            return null;
         }
-
-        throw new OandaApiException(response.StatusCode, errorMessage);
     }
 }

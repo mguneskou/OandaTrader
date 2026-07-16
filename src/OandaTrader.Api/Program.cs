@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using OandaTrader.Api;
 using OandaTrader.Domain.Strategies;
 using OandaTrader.Infrastructure.Backtesting;
 using OandaTrader.Infrastructure.Data;
@@ -47,6 +48,8 @@ builder.Services.PostConfigure<MlOptions>(o =>
 builder.Services.AddScoped<ModelTrainingService>();
 builder.Services.AddSingleton<MlPredictionService>();
 builder.Services.AddSingleton<IWinProbabilityPredictor>(sp => sp.GetRequiredService<MlPredictionService>());
+
+builder.Services.AddHostedService<TradingEngineHostedService>();
 
 var app = builder.Build();
 
