@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using OandaTrader.Domain.Backtesting;
 using OandaTrader.Domain.Models;
 using OandaTrader.Domain.Strategies;
@@ -25,6 +26,20 @@ public class BacktestRunner(AppDbContext db, CandleCacheService candleCache)
     {
         var candles = await candleCache.GetCandlesAsync(instrument, granularity, fromUtc, toUtc, ct);
         var (trades, summary) = BacktestEngine.Run(instrument, candles, new BaselineStrategy());
+
+        // A re-run over an overlapping window replaces that window's synthetic trades rather
+        // than stacking a second copy on top — duplicates would both inflate the analytics
+        // and overweight the repeated samples during training.
+        var superseded = await db.Trades
+            .Where(t => t.StrategySource == StrategySource.Backtest
+                        && t.Instrument == instrument
+                        && t.EntryTimeUtc >= fromUtc
+                        && t.EntryTimeUtc < toUtc)
+            .ToListAsync(ct);
+        if (superseded.Count > 0)
+        {
+            db.Trades.RemoveRange(superseded);
+        }
 
         var tradeEntities = trades.Select(t => new TradeEntity
         {

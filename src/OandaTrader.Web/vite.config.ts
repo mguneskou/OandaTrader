@@ -12,6 +12,13 @@ export default defineConfig({
         target: 'http://localhost:5047',
         changeOrigin: true,
       },
+      // ws: true so SignalR can negotiate up to a WebSocket transport rather than
+      // silently falling back to long polling.
+      '/hubs': {
+        target: 'http://localhost:5047',
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
 })
