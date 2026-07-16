@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using OandaTrader.Api.Realtime;
 using OandaTrader.Domain.Features;
 using OandaTrader.Domain.Models;
 using OandaTrader.Domain.Risk;
@@ -21,6 +22,7 @@ public class TradingEngineHostedService(
     IServiceScopeFactory scopeFactory,
     IOptions<OandaOptions> oandaOptions,
     IWinProbabilityPredictor predictor,
+    EngineBroadcaster broadcaster,
     ILogger<TradingEngineHostedService> logger) : BackgroundService
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
@@ -77,14 +79,28 @@ public class TradingEngineHostedService(
         var settings = await db.Settings.FindAsync([1], ct) ?? new Settings();
         var options = oandaOptions.Value;
 
-        if (!options.IsConfigured || !settings.EngineEnabled)
+        if (!options.IsConfigured)
         {
             return;
         }
 
+        // Always surface account + engine status to the dashboard, even while the engine is
+        // disabled or paused, so the UI stays live without the user having to turn trading on.
         var accountSummary = await oanda.GetAccountSummaryAsync(options.AccountId, ct);
-        decimal currentEquity = accountSummary.Account.Nav;
-        int openPositionCount = accountSummary.Account.OpenPositionCount;
+        var account = accountSummary.Account;
+        await broadcaster.BroadcastAccountAsync(new AccountUpdate(
+            account.Balance, account.Nav, account.UnrealizedPl, account.MarginUsed,
+            account.MarginAvailable, account.OpenTradeCount));
+        await broadcaster.BroadcastEngineStatusAsync(new EngineStatusUpdate(
+            settings.EngineEnabled, settings.PausedReason, settings.PausedAtUtc));
+
+        if (!settings.EngineEnabled)
+        {
+            return;
+        }
+
+        decimal currentEquity = account.Nav;
+        int openPositionCount = account.OpenPositionCount;
 
         RollDayBoundaryIfNeeded(currentEquity);
 
@@ -111,6 +127,10 @@ public class TradingEngineHostedService(
             });
             await db.SaveChangesAsync(ct);
             logger.LogWarning("Engine paused by circuit breaker: {Reason}", cbResult.Reason);
+            await broadcaster.BroadcastEngineStatusAsync(new EngineStatusUpdate(
+                settings.EngineEnabled, settings.PausedReason, settings.PausedAtUtc));
+            await broadcaster.BroadcastLogAsync(new EngineLogEntry(
+                DateTime.UtcNow, "Warning", $"Circuit breaker: {cbResult.Reason}"));
         }
 
         if (settings.PausedReason is not null)
@@ -189,7 +209,7 @@ public class TradingEngineHostedService(
             return;
         }
 
-        db.Trades.Add(new Trade
+        var trade = new Trade
         {
             OandaTradeId = fill.Value.TradeId,
             Instrument = instrument,
@@ -204,12 +224,20 @@ public class TradingEngineHostedService(
             FeaturesJson = System.Text.Json.JsonSerializer.Serialize(decision.Features),
             ReasoningText = decision.ReasoningText,
             MlConfidence = decision.MlConfidence,
-        });
+        };
+        db.Trades.Add(trade);
         await db.SaveChangesAsync(ct);
         _tradesOpenedToday++;
 
         logger.LogInformation("Opened {Direction} {Instrument} @ {Price} (trade {TradeId}, confidence {Confidence}).",
             decision.Direction, instrument, fill.Value.FillPrice, fill.Value.TradeId, decision.MlConfidence);
+
+        await broadcaster.BroadcastTradeAsync(new TradeEvent(
+            "opened", trade.Id, trade.Instrument, trade.Direction.ToString(),
+            trade.EntryPrice, null, null, trade.Outcome.ToString(), trade.MlConfidence, trade.ReasoningText));
+        await broadcaster.BroadcastLogAsync(new EngineLogEntry(
+            DateTime.UtcNow, "Info",
+            $"Opened {decision.Direction} {instrument} @ {fill.Value.FillPrice} ({units:N0} units, confidence {decision.MlConfidence:P1})."));
     }
 
     private async Task ReconcileClosedTradesAsync(
@@ -239,6 +267,12 @@ public class TradingEngineHostedService(
 
             logger.LogInformation("Trade {TradeId} ({Instrument}) closed: {Outcome}, PnL {PnL}.",
                 trade.OandaTradeId, trade.Instrument, trade.Outcome, realizedPl);
+
+            await broadcaster.BroadcastTradeAsync(new TradeEvent(
+                "closed", trade.Id, trade.Instrument, trade.Direction.ToString(),
+                trade.EntryPrice, trade.ExitPrice, trade.PnL, trade.Outcome.ToString(), trade.MlConfidence, trade.ReasoningText));
+            await broadcaster.BroadcastLogAsync(new EngineLogEntry(
+                DateTime.UtcNow, "Info", $"Closed {trade.Instrument} trade: {trade.Outcome}, PnL {realizedPl:N2}."));
         }
 
         if (newlyClosed == 0) return;

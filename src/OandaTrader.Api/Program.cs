@@ -2,6 +2,8 @@ using System.Net.Http.Headers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using OandaTrader.Api;
+using OandaTrader.Api.Hubs;
+using OandaTrader.Api.Realtime;
 using OandaTrader.Domain.Strategies;
 using OandaTrader.Infrastructure.Backtesting;
 using OandaTrader.Infrastructure.Data;
@@ -14,6 +16,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers()
     .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(
+        new System.Text.Json.Serialization.JsonStringEnumConverter()));
+builder.Services.AddSignalR()
+    .AddJsonProtocol(o => o.PayloadSerializerOptions.Converters.Add(
         new System.Text.Json.Serialization.JsonStringEnumConverter()));
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
@@ -32,8 +37,25 @@ builder.Services.AddHttpClient<OandaRestClient>((sp, http) =>
     }
 });
 
+// Separate long-lived HttpClient for the pricing stream: no total timeout (the connection
+// stays open indefinitely), unlike the REST client's default per-request timeout.
+builder.Services.AddHttpClient(OandaStreamingClient.HttpClientName, (sp, http) =>
+{
+    var options = sp.GetRequiredService<IOptions<OandaOptions>>().Value;
+    http.BaseAddress = options.StreamingBaseUri;
+    http.Timeout = Timeout.InfiniteTimeSpan;
+    if (!string.IsNullOrWhiteSpace(options.ApiToken))
+    {
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiToken);
+    }
+});
+builder.Services.AddSingleton<OandaStreamingClient>();
+
 builder.Services.AddScoped<CandleCacheService>();
 builder.Services.AddScoped<BacktestRunner>();
+
+builder.Services.AddSingleton<EngineStateCache>();
+builder.Services.AddSingleton<EngineBroadcaster>();
 
 builder.Services.Configure<MlOptions>(builder.Configuration.GetSection(MlOptions.SectionName));
 builder.Services.PostConfigure<MlOptions>(o =>
@@ -50,6 +72,7 @@ builder.Services.AddSingleton<MlPredictionService>();
 builder.Services.AddSingleton<IWinProbabilityPredictor>(sp => sp.GetRequiredService<MlPredictionService>());
 
 builder.Services.AddHostedService<TradingEngineHostedService>();
+builder.Services.AddHostedService<PriceStreamingHostedService>();
 
 var app = builder.Build();
 
@@ -76,5 +99,6 @@ if (!app.Environment.IsDevelopment())
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<EngineHub>("/hubs/engine");
 
 app.Run();

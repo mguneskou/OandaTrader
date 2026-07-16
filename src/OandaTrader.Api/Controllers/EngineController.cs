@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using OandaTrader.Api.Realtime;
 using OandaTrader.Domain.Models;
 using OandaTrader.Infrastructure.Data;
 
@@ -6,7 +7,7 @@ namespace OandaTrader.Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class EngineController(AppDbContext db) : ControllerBase
+public class EngineController(AppDbContext db, EngineBroadcaster broadcaster) : ControllerBase
 {
     [HttpGet("status")]
     public async Task<IActionResult> GetStatus(CancellationToken ct)
@@ -26,6 +27,7 @@ public class EngineController(AppDbContext db) : ControllerBase
         var settings = await GetOrCreateSettingsAsync(ct);
         settings.EngineEnabled = true;
         await db.SaveChangesAsync(ct);
+        await BroadcastStatusAsync(settings);
         return Ok(new { settings.EngineEnabled });
     }
 
@@ -35,6 +37,7 @@ public class EngineController(AppDbContext db) : ControllerBase
         var settings = await GetOrCreateSettingsAsync(ct);
         settings.EngineEnabled = false;
         await db.SaveChangesAsync(ct);
+        await BroadcastStatusAsync(settings);
         return Ok(new { settings.EngineEnabled });
     }
 
@@ -47,8 +50,13 @@ public class EngineController(AppDbContext db) : ControllerBase
         settings.PausedReason = null;
         settings.PausedAtUtc = null;
         await db.SaveChangesAsync(ct);
+        await BroadcastStatusAsync(settings);
         return Ok(new { settings.PausedReason });
     }
+
+    private Task BroadcastStatusAsync(Settings settings) =>
+        broadcaster.BroadcastEngineStatusAsync(new EngineStatusUpdate(
+            settings.EngineEnabled, settings.PausedReason, settings.PausedAtUtc));
 
     private async Task<Settings> GetOrCreateSettingsAsync(CancellationToken ct)
     {
