@@ -53,6 +53,7 @@ builder.Services.AddSingleton<OandaStreamingClient>();
 
 builder.Services.AddScoped<CandleCacheService>();
 builder.Services.AddScoped<BacktestRunner>();
+builder.Services.AddSingleton<BacktestJobTracker>();
 
 builder.Services.AddSingleton<EngineStateCache>();
 builder.Services.AddSingleton<EngineBroadcaster>();

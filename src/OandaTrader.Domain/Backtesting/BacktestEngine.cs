@@ -16,21 +16,38 @@ namespace OandaTrader.Domain.Backtesting;
 /// </summary>
 public static class BacktestEngine
 {
+    /// <param name="onProgress">Reported as an integer percent (0-100), at most once per
+    /// point change - callers driving a UI progress bar can wire this directly.</param>
     public static (List<BacktestTradeResult> Trades, BacktestSummary Summary) Run(
-        string instrument, IReadOnlyList<Candle> candles, IStrategy strategy)
+        string instrument, IReadOnlyList<Candle> candles, IStrategy strategy, Action<int>? onProgress = null)
     {
         var results = new List<BacktestTradeResult>();
+        var history = candles as List<Candle> ?? candles.ToList();
 
-        for (int i = FeatureBuilder.MinimumCandleCount - 1; i < candles.Count; i++)
+        int firstIndex = FeatureBuilder.MinimumCandleCount - 1;
+        int totalBars = candles.Count - firstIndex;
+        int lastReportedPercent = -1;
+
+        for (int i = firstIndex; i < candles.Count; i++)
         {
-            var history = candles as List<Candle> ?? candles.ToList();
             var window = history.GetRange(0, i + 1);
 
             var decision = strategy.Evaluate(new StrategyContext { Instrument = instrument, History = window });
-            if (decision is null) continue;
+            if (decision is not null)
+            {
+                var result = SimulateExit(candles, i, decision);
+                if (result is not null) results.Add(result);
+            }
 
-            var result = SimulateExit(candles, i, decision);
-            if (result is not null) results.Add(result);
+            if (onProgress is not null && totalBars > 0)
+            {
+                int percent = (i - firstIndex + 1) * 100 / totalBars;
+                if (percent != lastReportedPercent)
+                {
+                    lastReportedPercent = percent;
+                    onProgress(percent);
+                }
+            }
         }
 
         return (results, Summarize(results));

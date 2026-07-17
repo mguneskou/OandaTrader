@@ -10,4 +10,5 @@ public interface IEngineClient
     Task Account(AccountUpdate update);
     Task Trade(TradeEvent tradeEvent);
     Task Log(EngineLogEntry entry);
+    Task BacktestProgress(BacktestProgressUpdate update);
 }

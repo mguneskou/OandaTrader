@@ -88,19 +88,14 @@ export interface AnalyticsSummary {
   }[]
 }
 
-export interface BacktestRunResult {
+export interface BacktestRun {
   id: number
+  runAtUtc: string
   instrument: string
   granularity: Granularity
   startDate: string
   endDate: string
-  summary: {
-    tradeCount: number
-    wins: number
-    losses: number
-    winRatePercent: number
-    totalPnLInR: number
-  }
+  resultSummaryJson: string
 }
 
 export interface CircuitBreakerEvent {
@@ -171,9 +166,13 @@ export const api = {
       { method: 'POST' },
     ),
 
+  // Kicks the backtest off in the background; the run's own progress/completion streams
+  // over SignalR as BacktestProgress events keyed by the returned jobId.
   runBacktest: (instrument: string, months: number) =>
-    request<BacktestRunResult>('/api/backtest/run', {
+    request<{ jobId: string }>('/api/backtest/run', {
       method: 'POST',
       body: JSON.stringify({ instrument, months }),
     }),
+
+  backtestRuns: () => request<BacktestRun[]>('/api/backtest/runs'),
 }

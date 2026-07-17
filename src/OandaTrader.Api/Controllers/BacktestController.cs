@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using OandaTrader.Api.Realtime;
 using OandaTrader.Domain.Models;
 using OandaTrader.Infrastructure.Backtesting;
 using OandaTrader.Infrastructure.Data;
@@ -11,8 +12,16 @@ public record RunBacktestRequest(string Instrument, int Months = 6, string? Gran
 
 [ApiController]
 [Route("api/[controller]")]
-public class BacktestController(BacktestRunner runner, AppDbContext db) : ControllerBase
+public class BacktestController(
+    AppDbContext db,
+    EngineBroadcaster broadcaster,
+    IServiceScopeFactory scopeFactory,
+    BacktestJobTracker jobTracker,
+    ILogger<BacktestController> logger) : ControllerBase
 {
+    /// <summary>Kicks the backtest off in the background and returns immediately - a 6-12
+    /// month run takes long enough that holding the HTTP request open isn't a good fit.
+    /// Progress streams over SignalR as BacktestProgress events keyed by the returned jobId.</summary>
     [HttpPost("run")]
     public async Task<IActionResult> Run([FromBody] RunBacktestRequest request, CancellationToken ct)
     {
@@ -32,25 +41,54 @@ public class BacktestController(BacktestRunner runner, AppDbContext db) : Contro
             return BadRequest(new { error = $"Unknown granularity '{request.Granularity}'." });
         }
 
+        if (!jobTracker.TryStart(request.Instrument))
+        {
+            return Conflict(new { error = $"A backtest for {request.Instrument} is already running." });
+        }
+
+        var jobId = Guid.NewGuid();
         var toUtc = DateTime.UtcNow;
         var fromUtc = toUtc.AddMonths(-Math.Max(1, request.Months));
 
+        // Fire-and-forget on the app's own scope factory (not HttpContext.RequestServices,
+        // which gets disposed the moment this action returns). Errors are caught and reported
+        // over SignalR instead of propagating - there's no HTTP response left to carry them.
+        _ = RunInBackgroundAsync(jobId, request.Instrument, granularity, fromUtc, toUtc);
+
+        return Accepted(new { jobId });
+    }
+
+    private async Task RunInBackgroundAsync(Guid jobId, string instrument, Granularity granularity, DateTime fromUtc, DateTime toUtc)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var runner = scope.ServiceProvider.GetRequiredService<BacktestRunner>();
+
         try
         {
-            var result = await runner.RunAsync(request.Instrument, granularity, fromUtc, toUtc, ct);
-            return Ok(new
-            {
-                result.Run.Id,
-                result.Run.Instrument,
-                result.Run.Granularity,
-                result.Run.StartDate,
-                result.Run.EndDate,
-                Summary = result.Summary,
-            });
+            await runner.RunAsync(
+                instrument, granularity, fromUtc, toUtc,
+                onProgress: (stage, percent) =>
+                    _ = broadcaster.BroadcastBacktestProgressAsync(new BacktestProgressUpdate(jobId, instrument, stage, percent, null)),
+                ct: CancellationToken.None);
+
+            await broadcaster.BroadcastBacktestProgressAsync(
+                new BacktestProgressUpdate(jobId, instrument, "Completed", 100, null));
         }
         catch (OandaApiException ex)
         {
-            return StatusCode(StatusCodes.Status502BadGateway, new { error = ex.Message });
+            logger.LogWarning(ex, "Backtest {JobId} for {Instrument} failed.", jobId, instrument);
+            await broadcaster.BroadcastBacktestProgressAsync(
+                new BacktestProgressUpdate(jobId, instrument, "Failed", 0, ex.Message));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Backtest {JobId} for {Instrument} failed unexpectedly.", jobId, instrument);
+            await broadcaster.BroadcastBacktestProgressAsync(
+                new BacktestProgressUpdate(jobId, instrument, "Failed", 0, ex.Message));
+        }
+        finally
+        {
+            jobTracker.Finish(instrument);
         }
     }
 

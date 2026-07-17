@@ -21,11 +21,19 @@ public class BacktestRunResult
 /// BacktestRun summary row.</summary>
 public class BacktestRunner(AppDbContext db, CandleCacheService candleCache)
 {
+    /// <param name="onProgress">Stage name ("Fetching" or "Simulating") plus a 0-100 percent
+    /// within that stage. Fetching has no granular progress of its own (a handful of REST
+    /// pages at most), so it just reports 0 then jumps to the simulate stage.</param>
     public async Task<BacktestRunResult> RunAsync(
-        string instrument, Granularity granularity, DateTime fromUtc, DateTime toUtc, CancellationToken ct = default)
+        string instrument, Granularity granularity, DateTime fromUtc, DateTime toUtc,
+        Action<string, int>? onProgress = null, CancellationToken ct = default)
     {
+        onProgress?.Invoke("Fetching", 0);
         var candles = await candleCache.GetCandlesAsync(instrument, granularity, fromUtc, toUtc, ct);
-        var (trades, summary) = BacktestEngine.Run(instrument, candles, new BaselineStrategy());
+
+        var (trades, summary) = BacktestEngine.Run(
+            instrument, candles, new BaselineStrategy(),
+            onProgress is null ? null : percent => onProgress("Simulating", percent));
 
         // A re-run over an overlapping window replaces that window's synthetic trades rather
         // than stacking a second copy on top — duplicates would both inflate the analytics
@@ -67,7 +75,10 @@ public class BacktestRunner(AppDbContext db, CandleCacheService candleCache)
             EndDate = toUtc,
             Instrument = instrument,
             Granularity = granularity,
-            ResultSummaryJson = JsonSerializer.Serialize(summary),
+            // camelCase: this field is read back by the frontend (unlike FeaturesJson, which
+            // only ever round-trips through backend code), so it needs to match the API's
+            // usual JSON casing rather than System.Text.Json's PascalCase default.
+            ResultSummaryJson = JsonSerializer.Serialize(summary, JsonSerializerOptions.Web),
         };
         db.BacktestRuns.Add(run);
 

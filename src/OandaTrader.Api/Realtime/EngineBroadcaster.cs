@@ -29,4 +29,9 @@ public class EngineBroadcaster(IHubContext<EngineHub, IEngineClient> hub, Engine
     public Task BroadcastTradeAsync(TradeEvent tradeEvent) => hub.Clients.All.Trade(tradeEvent);
 
     public Task BroadcastLogAsync(EngineLogEntry entry) => hub.Clients.All.Log(entry);
+
+    // Not cached: backtest progress is transient and a page joining mid-run doesn't need
+    // history replayed, unlike price/status/account.
+    public Task BroadcastBacktestProgressAsync(BacktestProgressUpdate update) =>
+        hub.Clients.All.BacktestProgress(update);
 }
